@@ -4,28 +4,48 @@ import com.campus.dto.Dtos.*;
 import com.campus.entity.*;
 import com.campus.exception.ApiException;
 import com.campus.repository.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class AttendanceService {
+    private static final Logger log = LoggerFactory.getLogger(AttendanceService.class);
     public static final int QR_TTL_SECONDS = 30;
-    private final StringRedisTemplate redis;
+
+    private final Optional<StringRedisTemplate> redis;
     private final SessionRepository sessions;
     private final ZoneRepository zones;
     private final AttendanceRepository attendance;
 
-    public AttendanceService(StringRedisTemplate redis, SessionRepository sessions, ZoneRepository zones, AttendanceRepository attendance) {
-        this.redis = redis; this.sessions = sessions; this.zones = zones; this.attendance = attendance;
+    // Resilient in-memory fallback token cache
+    private final Map<Long, ExpiringToken> memoryTokenStore = new ConcurrentHashMap<>();
+
+    public AttendanceService(
+            @Autowired(required = false) StringRedisTemplate redis,
+            SessionRepository sessions,
+            ZoneRepository zones,
+            AttendanceRepository attendance
+    ) {
+        this.redis = Optional.ofNullable(redis);
+        this.sessions = sessions;
+        this.zones = zones;
+        this.attendance = attendance;
     }
 
     public ClassSession start(AppUser faculty, StartSessionReq req) {
         zones.findById(req.zoneId()).orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Unknown zone"));
         var s = new ClassSession();
-        s.setCourseName(req.courseName()); s.setFacultyId(faculty.getId()); s.setZoneId(req.zoneId());
+        s.setCourseName(req.courseName());
+        s.setFacultyId(faculty.getId());
+        s.setZoneId(req.zoneId());
         return sessions.save(s);
     }
 
@@ -34,33 +54,89 @@ public class AttendanceService {
         var s = ownedSession(faculty, sessionId);
         if (!s.isActive()) throw new ApiException(HttpStatus.BAD_REQUEST, "Session has ended");
         String token = UUID.randomUUID().toString().substring(0, 8).toUpperCase();
-        redis.opsForValue().set("qr:" + sessionId, token, Duration.ofSeconds(QR_TTL_SECONDS));
+        
+        saveToken(sessionId, token);
+
         return Map.of("sessionId", sessionId, "token", token, "expiresInSeconds", QR_TTL_SECONDS);
     }
 
     public AttendanceRecord mark(AppUser student, MarkReq req) {
         var s = sessions.findById(req.sessionId()).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Session not found"));
         if (!s.isActive()) throw new ApiException(HttpStatus.BAD_REQUEST, "Session has ended");
-        String live = redis.opsForValue().get("qr:" + s.getId());
+        
+        String live = getToken(s.getId());
         if (live == null || !live.equalsIgnoreCase(req.token().trim()))
             throw new ApiException(HttpStatus.BAD_REQUEST, "Code expired or wrong. Ask for the current code.");
+            
         var zone = zones.findById(s.getZoneId()).orElseThrow();
         double d = haversineMeters(req.lat(), req.lng(), zone.getLatitude(), zone.getLongitude());
         if (d > zone.getRadiusMeters())
             throw new ApiException(HttpStatus.FORBIDDEN, "You are " + Math.round(d) + " m from " + zone.getName() + ". Move inside the zone.");
+            
         if (attendance.existsBySessionIdAndStudentId(s.getId(), student.getId()))
             throw new ApiException(HttpStatus.CONFLICT, "Attendance already marked");
+            
         var r = new AttendanceRecord();
-        r.setSessionId(s.getId()); r.setStudentId(student.getId());
-        r.setStudentName(student.getName()); r.setCourseName(s.getCourseName());
+        r.setSessionId(s.getId());
+        r.setStudentId(student.getId());
+        r.setStudentName(student.getName());
+        r.setCourseName(s.getCourseName());
         return attendance.save(r);
     }
 
     public ClassSession end(AppUser faculty, Long sessionId) {
         var s = ownedSession(faculty, sessionId);
         s.setActive(false);
-        redis.delete("qr:" + sessionId);
+        deleteToken(sessionId);
         return sessions.save(s);
+    }
+
+    private void saveToken(Long sessionId, String token) {
+        // Save in memory
+        memoryTokenStore.put(sessionId, new ExpiringToken(token, System.currentTimeMillis() + (QR_TTL_SECONDS * 1000L)));
+        
+        // Save in Redis if available
+        redis.ifPresent(r -> {
+            try {
+                r.opsForValue().set("qr:" + sessionId, token, Duration.ofSeconds(QR_TTL_SECONDS));
+            } catch (Exception e) {
+                log.debug("Redis unavailable for saving QR token, fallback to in-memory: {}", e.getMessage());
+            }
+        });
+    }
+
+    private String getToken(Long sessionId) {
+        // Check Redis first if available
+        if (redis.isPresent()) {
+            try {
+                String val = redis.get().opsForValue().get("qr:" + sessionId);
+                if (val != null) return val;
+            } catch (Exception e) {
+                log.debug("Redis lookup error, checking in-memory store: {}", e.getMessage());
+            }
+        }
+
+        // Check in-memory store
+        ExpiringToken entry = memoryTokenStore.get(sessionId);
+        if (entry != null) {
+            if (entry.expiresAt() > System.currentTimeMillis()) {
+                return entry.token();
+            } else {
+                memoryTokenStore.remove(sessionId);
+            }
+        }
+        return null;
+    }
+
+    private void deleteToken(Long sessionId) {
+        memoryTokenStore.remove(sessionId);
+        redis.ifPresent(r -> {
+            try {
+                r.delete("qr:" + sessionId);
+            } catch (Exception e) {
+                log.debug("Redis error deleting token: {}", e.getMessage());
+            }
+        });
     }
 
     private ClassSession ownedSession(AppUser faculty, Long id) {
@@ -76,4 +152,6 @@ public class AttendanceService {
         double a = Math.sin(dp / 2) * Math.sin(dp / 2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2);
         return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
+
+    private record ExpiringToken(String token, long expiresAt) {}
 }

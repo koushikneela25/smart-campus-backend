@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE properties SYSTEM "http://java.sun.com/dtd/properties.dtd">
+<properties>
+    <!-- Server Configuration -->
+    <entry key="server.port">${PORT:8080}</entry>
+
+    <!-- Spring Application -->
+    <entry key="spring.application.name">smart-campus-backend</entry>
+
+    <!-- Datasource / PostgreSQL Configuration -->
+    <entry key="spring.datasource.url">${SPRING_DATASOURCE_URL:${DATABASE_URL:jdbc:postgresql://localhost:5432/campus}}</entry>
+    <entry key="spring.datasource.username">${SPRING_DATASOURCE_USERNAME:${DATABASE_USERNAME:${POSTGRES_USER:postgres}}}</entry>
+    <entry key="spring.datasource.password">${SPRING_DATASOURCE_PASSWORD:${DATABASE_PASSWORD:${POSTGRES_PASSWORD:postgres}}}</entry>
+    <entry key="spring.datasource.driver-class-name">org.postgresql.Driver</entry>
+
+    <!-- Hikari Connection Pool Settings -->
+    <entry key="spring.datasource.hikari.maximum-pool-size">${DB_POOL_SIZE:5}</entry>
+    <entry key="spring.datasource.hikari.minimum-idle">1</entry>
+    <entry key="spring.datasource.hikari.connection-timeout">30000</entry>
+    <entry key="spring.datasource.hikari.idle-timeout">600000</entry>
+    <entry key="spring.datasource.hikari.max-lifetime">1800000</entry>
+
+    <!-- JPA / Hibernate Configuration -->
+    <entry key="spring.jpa.hibernate.ddl-auto">${SPRING_JPA_HIBERNATE_DDL_AUTO:update}</entry>
+    <entry key="spring.jpa.open-in-view">false</entry>
+    <entry key="spring.jpa.properties.hibernate.dialect">org.hibernate.dialect.PostgreSQLDialect</entry>
+    <entry key="spring.jpa.properties.hibernate.jdbc.lob.non_contextual_creation">true</entry>
+
+    <!-- Redis Configuration -->
+    <entry key="spring.data.redis.url">${REDIS_URL:${SPRING_DATA_REDIS_URL:}}</entry>
+    <entry key="spring.data.redis.host">${REDIS_HOST:localhost}</entry>
+    <entry key="spring.data.redis.port">${REDIS_PORT:6379}</entry>
+    <entry key="spring.data.redis.password">${REDIS_PASSWORD:}</entry>
+    <entry key="spring.data.redis.timeout">3000ms</entry>
+
+    <!-- App Security & CORS Configuration -->
+    <entry key="app.jwt.secret">${JWT_SECRET:change-this-secret-to-at-least-32-characters-long-please-smart-campus}</entry>
+    <entry key="app.jwt.expiration-ms">${JWT_EXPIRATION_MS:86400000}</entry>
+    <entry key="app.cors-origin">${CORS_ORIGIN:https://smart-campus-frontend-chi.vercel.app,http://localhost:5173,http://localhost:3000}</entry>
+</properties>
